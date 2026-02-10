@@ -118,7 +118,7 @@ func getReleaseVersion(rel *github.RepositoryRelease) (tableRow, error) {
 
 	row := tableRow{
 		Version: rel.GetTagName(),
-		Date:    rel.GetCreatedAt().Format("2006-01-01"),
+		Date:    rel.GetPublishedAt().Format("2006-01-01"),
 	}
 
 	find := fmt.Sprintf("syncthing-%s-%s", goos, runtime.GOARCH)
@@ -256,6 +256,10 @@ func getVersionFromGo(name string) (tableRow, error) {
 func getVersionFromCommand(name string) (tableRow, error) {
 	cmd := exec.Command(name, "--version")
 	out, err := cmd.CombinedOutput()
+	if err != nil {
+		cmd = exec.Command(name, "version")
+		out, err = cmd.CombinedOutput()
+	}
 	if err != nil {
 		return tableRow{}, fmt.Errorf("syncthing: running: %w: %s", err, out)
 	}

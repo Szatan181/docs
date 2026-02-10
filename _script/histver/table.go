@@ -7,6 +7,7 @@ import (
 	"io"
 	"regexp"
 	"sort"
+	"strings"
 )
 
 type tableRow struct {
@@ -27,9 +28,9 @@ func (r *tableRow) fromStrings(ss []string) error {
 	if len(ss) < 3 {
 		return fmt.Errorf("not enough fields")
 	}
-	r.Version = ss[0]
-	r.Runtime = ss[1]
-	r.Date = ss[2]
+	r.Version = strings.Trim(ss[0], "*")
+	r.Runtime = strings.Trim(ss[1], "*")
+	r.Date = strings.Trim(ss[2], "*")
 	return nil
 }
 
@@ -59,6 +60,31 @@ func writeTable(w io.Writer, rows []tableRow) error {
 		}
 		return rows[a].Date > rows[b].Date
 	})
+
+	prevRunMinor := ""
+	prevSynMinor := ""
+	for i := len(rows) - 1; i >= 0; i-- {
+		r := &rows[i]
+		// Bold major/minor runtime releases
+		var runMinor string
+		if strings.Count(r.Runtime, ".") == 1 {
+			// old style "go1.2" type release number
+			runMinor = r.Runtime
+		} else {
+			// modern style "go1.25.0" to release number
+			runMinor = r.Runtime[:strings.LastIndex(r.Runtime, ".")]
+		}
+		if runMinor != prevRunMinor {
+			prevRunMinor = runMinor
+			r.Runtime = fmt.Sprintf("**%s**", r.Runtime)
+		}
+		// Bold major/minor Syncthing releases
+		synMinor := r.Version[:strings.LastIndex(r.Version, ".")]
+		if synMinor != prevSynMinor {
+			prevSynMinor = synMinor
+			r.Version = fmt.Sprintf("**%s**", r.Version)
+		}
+	}
 	cw := csv.NewWriter(w)
 	if err := cw.Write(tableHeader); err != nil {
 		return err
