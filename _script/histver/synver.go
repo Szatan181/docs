@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -34,7 +35,7 @@ func main() {
 	}
 
 	// Load current versions table
-	var table []*tableRow
+	var table []tableRow
 	fd, err := os.Open(*versionsFile)
 	if os.IsNotExist(err) {
 		// File doesn't exist yet. That's alright.
@@ -109,39 +110,53 @@ func getReleases(ctx context.Context) ([]*github.RepositoryRelease, error) {
 	return releases, nil
 }
 
-func getReleaseVersion(rel *github.RepositoryRelease) (*tableRow, error) {
+func getReleaseVersion(rel *github.RepositoryRelease) (tableRow, error) {
 	goos := runtime.GOOS
 	if goos == "darwin" {
 		goos = "macos"
 	}
+
+	row := tableRow{
+		Version: rel.GetTagName(),
+		Date:    rel.GetCreatedAt().Format("2006-01-01"),
+	}
+
 	find := fmt.Sprintf("syncthing-%s-%s", goos, runtime.GOARCH)
 	for _, asset := range rel.Assets {
 		if strings.HasPrefix(*asset.Name, find) {
 			log.Println("Downloading", *asset.Name)
 			resp, err := http.Get(*asset.BrowserDownloadURL)
 			if err != nil {
-				return nil, err
+				return tableRow{}, err
 			}
 			bs, err := io.ReadAll(resp.Body)
 			resp.Body.Close()
 			if err != nil {
-				return nil, err
+				return tableRow{}, err
 			}
 			switch filepath.Ext(*asset.Name) {
 			case ".zip":
-				return getReleaseVersionZip(bs)
+				r, err := getReleaseVersionZip(bs)
+				if err != nil {
+					return tableRow{}, err
+				}
+				return row.merge(r), nil
 			default:
-				return getReleaseVersionTarGz(bs)
+				r, err := getReleaseVersionTarGz(bs)
+				if err != nil {
+					return tableRow{}, err
+				}
+				return row.merge(r), nil
 			}
 		}
 	}
-	return nil, fmt.Errorf("no asset found")
+	return tableRow{}, fmt.Errorf("no asset found")
 }
 
-func getReleaseVersionZip(bs []byte) (*tableRow, error) {
+func getReleaseVersionZip(bs []byte) (tableRow, error) {
 	zr, err := zip.NewReader(bytes.NewReader(bs), int64(len(bs)))
 	if err != nil {
-		return nil, err
+		return tableRow{}, err
 	}
 	for _, f := range zr.File {
 		if strings.Contains(path.Dir(f.Name), "/") {
@@ -153,18 +168,18 @@ func getReleaseVersionZip(bs []byte) (*tableRow, error) {
 		}
 		rd, err := f.Open()
 		if err != nil {
-			return nil, err
+			return tableRow{}, err
 		}
 
 		return getVersionFromReader(rd)
 	}
-	return nil, fmt.Errorf("no syncthing binary found")
+	return tableRow{}, fmt.Errorf("no syncthing binary found")
 }
 
-func getReleaseVersionTarGz(bs []byte) (*tableRow, error) {
+func getReleaseVersionTarGz(bs []byte) (tableRow, error) {
 	gr, err := gzip.NewReader(bytes.NewReader(bs))
 	if err != nil {
-		return nil, err
+		return tableRow{}, err
 	}
 	tr := tar.NewReader(gr)
 	for {
@@ -178,36 +193,64 @@ func getReleaseVersionTarGz(bs []byte) (*tableRow, error) {
 
 		return getVersionFromReader(tr)
 	}
-	return nil, fmt.Errorf("no syncthing binary found")
+	return tableRow{}, fmt.Errorf("no syncthing binary found")
 }
 
-func getVersionFromReader(r io.Reader) (*tableRow, error) {
+func getVersionFromReader(r io.Reader) (tableRow, error) {
 	fd, err := os.CreateTemp("", "syncthing")
 	if err != nil {
-		return nil, err
+		return tableRow{}, err
 	}
 	if _, err := io.Copy(fd, r); err != nil {
-		return nil, err
+		return tableRow{}, err
 	}
 	fd.Close()
 	defer os.Remove(fd.Name())
 	if err := os.Chmod(fd.Name(), 0o755); err != nil {
-		return nil, err
+		return tableRow{}, err
 	}
 
-	return getVersionFromCommand(fd.Name())
+	if row, err := getVersionFromCommand(fd.Name()); err == nil {
+		return row, nil
+	}
+	return getVersionFromGo(fd.Name())
 }
 
-func getVersionFromCommand(name string) (*tableRow, error) {
+func getVersionFromGo(name string) (tableRow, error) {
+	cmd := exec.Command("go", "version", "-m", name)
+	out, err := cmd.Output()
+	if err != nil {
+		return tableRow{}, err
+	}
+
+	// % go version -m ~/bin/syncthing
+	// /Users/jb/bin/syncthing: go1.25.7
+	// path	github.com/syncthing/syncthing/cmd/syncthing
+	// ...
+
+	if idx := bytes.Index(out, []byte{'\n'}); idx < 0 {
+		return tableRow{}, errors.New("no version")
+	} else {
+		out = out[:idx]
+	}
+
+	if idx := bytes.LastIndex(out, []byte{' '}); idx < 0 {
+		return tableRow{}, errors.New("no version")
+	} else {
+		return tableRow{Runtime: string(out[idx+1:])}, nil
+	}
+}
+
+func getVersionFromCommand(name string) (tableRow, error) {
 	cmd := exec.Command(name, "--version")
 	out, err := cmd.Output()
 	if err != nil {
-		return nil, err
+		return tableRow{}, err
 	}
 
 	var r tableRow
 	if err := r.fromVersion(string(out)); err != nil {
-		return nil, err
+		return tableRow{}, err
 	}
-	return &r, nil
+	return r, nil
 }

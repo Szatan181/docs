@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"encoding/csv"
 	"fmt"
 	"io"
@@ -12,6 +13,14 @@ type tableRow struct {
 	Version string
 	Runtime string
 	Date    string
+}
+
+func (t tableRow) merge(other tableRow) tableRow {
+	return tableRow{
+		Version: cmp.Or(other.Version, t.Version),
+		Runtime: cmp.Or(other.Runtime, t.Runtime),
+		Date:    cmp.Or(other.Date, t.Date),
+	}
 }
 
 func (r *tableRow) fromStrings(ss []string) error {
@@ -37,13 +46,13 @@ func (r *tableRow) fromVersion(ver string) error {
 	return nil
 }
 
-func (r *tableRow) toStrings() []string {
+func (r tableRow) toStrings() []string {
 	return []string{r.Version, r.Runtime, r.Date}
 }
 
 var tableHeader = []string{"Version", "Runtime", "Date"}
 
-func writeTable(w io.Writer, rows []*tableRow) error {
+func writeTable(w io.Writer, rows []tableRow) error {
 	sort.Slice(rows, func(a, b int) bool {
 		if rows[a].Date == rows[b].Date {
 			return rows[a].Version > rows[b].Version
@@ -63,9 +72,9 @@ func writeTable(w io.Writer, rows []*tableRow) error {
 	return cw.Error()
 }
 
-func readTable(r io.Reader) ([]*tableRow, error) {
+func readTable(r io.Reader) ([]tableRow, error) {
 	cr := csv.NewReader(r)
-	var rows []*tableRow
+	var rows []tableRow
 	for {
 		ss, err := cr.Read()
 		if err == io.EOF {
@@ -84,7 +93,7 @@ func readTable(r io.Reader) ([]*tableRow, error) {
 		if err := row.fromStrings(ss); err != nil {
 			return nil, err
 		}
-		rows = append(rows, &row)
+		rows = append(rows, row)
 	}
 	return rows, nil
 }
